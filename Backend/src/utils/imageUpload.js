@@ -49,12 +49,29 @@ export const uploadChatFiles = multer({
     storage: chatStorage,
     limits: { fileSize: 50 * 1024 * 1024 }, // 50MB
     fileFilter: (req, file, cb) => {
-        const allowed = ["image/jpeg", "image/png", "image/webp",
-            "video/mp4", "video/mkv", "video/webm",
-            "audio/mpeg", "audio/mp3", "audio/wav",
+        const allowed = [
+            // Images
+            "image/jpeg",
+            "image/png",
+            "image/webp",
+
+            // Videos
+            "video/mp4",
+            "video/mkv",
+            "video/webm",
+
+            // Audios
+            "audio/mpeg",  // mp3
+            "audio/mp3",
+            "audio/wav",
+            "audio/webm",  // ✅ mic recording support
+
+            // Documents
             "application/pdf",
             "application/msword",
-            "application/vnd.openxmlformats-officedocument.wordprocessingml.document"];
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        ];
+
         if (!allowed.includes(file.mimetype)) {
             return cb(new Error('File type not allowed!'), false)
         }

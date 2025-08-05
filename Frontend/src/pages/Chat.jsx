@@ -9,6 +9,7 @@ import { useParams } from "react-router-dom";
 import axios from "axios";
 import Swal from "sweetalert2";
 import socket from "../template/Socket.io";
+import EmojiPicker from "emoji-picker-react";
 
 export default function Chat() {
   const [attachments, setAttachments] = useState([]);
@@ -29,6 +30,123 @@ export default function Chat() {
   const [activeMsgMenu, setActiveMsgMenu] = useState(null);
   const [editingMsgId, setEditingMsgId] = useState(null);
   const [editInput, setEditInput] = useState("");
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  const [emojiOpen, setEmojiOpen] = useState(false);
+  const [messageWithEmoji, setMessageWithEmoji] = useState("");
+  const emojiRef = useRef(null);
+
+  // Add emoji to message input
+  const handleEmojiClick = (emojiData) => {
+    setMessageWithEmoji((prev) => prev + emojiData.emoji);
+    setEmojiOpen(false);
+  };
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  const [isRecording, setIsRecording] = useState(false);
+  const [recordingTime, setRecordingTime] = useState(0);
+  const [mediaRecorder, setMediaRecorder] = useState(null);
+  const [recordedAudio, setRecordedAudio] = useState(null);
+  const chunksRef = useRef([]);
+  const recordingIntervalRef = useRef(null);
+
+  const handleMicClick = async () => {
+    if (!isRecording) {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        const recorder = new MediaRecorder(stream);
+
+        chunksRef.current = [];
+        recorder.ondataavailable = (event) => {
+          if (event.data.size > 0) chunksRef.current.push(event.data);
+        };
+
+        recorder.onstop = () => {
+          const audioBlob = new Blob(chunksRef.current, { type: "audio/webm" });
+          const audioFile = new File([audioBlob], `recording-${Date.now()}.webm`, {
+            type: "audio/webm",
+          });
+          setRecordedAudio(audioFile);
+          stream.getTracks().forEach((track) => track.stop()); // Mic release
+        };
+
+        // Start Recording
+        recorder.start();
+        setMediaRecorder(recorder);
+        setIsRecording(true);
+        setIsMicOn(false);
+        setRecordingTime(0);
+
+        // Timer Start
+        recordingIntervalRef.current = setInterval(() => {
+          setRecordingTime((prev) => prev + 1);
+        }, 1000);
+      } catch (err) {
+        console.error("Mic access denied", err);
+        Swal.fire("Error", "Please allow microphone access!", "error");
+      }
+    } else {
+      // Stop Recording
+      mediaRecorder?.stop();
+      setIsRecording(false);
+      setIsMicOn(true);
+
+      // Stop timer
+      clearInterval(recordingIntervalRef.current);
+    }
+  };
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
   const { id } = useParams();
   const messagesEndRef = useRef(null);
@@ -232,17 +350,28 @@ export default function Chat() {
 
   // Send message
   const sendMessage = async () => {
-    if ((!message || message.trim() === "") && attachments.length === 0) return;
+    if (
+      (!message || message.trim() === "") &&
+      attachments.length === 0 &&
+      !recordedAudio
+    )
+      return;
     if (!selectedUser || !loggedInUser?._id) return;
+
+    // Merge normal attachments + recorded audio
+    const allAttachments = [...attachments];
+    if (recordedAudio) {
+      allAttachments.push(recordedAudio);
+    }
 
     // Temporary message for UI (Optimistic)
     const tempMsg = {
       _id: Date.now(),
       sender: loggedInUser._id,
       receiver: selectedUser._id,
-      messageType: attachments.length > 0 ? "file" : "text",
+      messageType: allAttachments.length > 0 ? "file" : "text",
       message,
-      files: attachments.map((file) => ({
+      files: allAttachments.map((file) => ({
         url: URL.createObjectURL(file),
         type: file.type.startsWith("image")
           ? "image"
@@ -270,13 +399,15 @@ export default function Chat() {
     const formData = new FormData();
     formData.append("receiverId", selectedUser._id);
     formData.append("message", message);
-    attachments.forEach((file) => {
+
+    allAttachments.forEach((file) => {
       formData.append("files", file);
     });
 
     // Clear input & attachments for UI
     setMessage("");
     setAttachments([]);
+    setRecordedAudio(null); // ✅ Audio preview clear
     setTimeout(() => scrollToBottom(true), 100);
 
     try {
@@ -319,12 +450,12 @@ export default function Chat() {
 
       // ** IMPORTANT: Remove this emit to avoid double messages **
       // socket.emit("sendMessage", newMessage);
-
     } catch (error) {
       console.error("Message send failed:", error);
       Swal.fire("Error", "Message send failed", "error");
     }
   };
+
 
 
 
@@ -423,11 +554,11 @@ export default function Chat() {
     }
   };
 
-  
 
 
 
-  
+
+
 
   return (
     <div className="flex w-screen h-[32rem] bg-gray-100">
@@ -875,11 +1006,31 @@ export default function Chat() {
               </div>
             )}
 
+            {/* Audio Recording Preview (After Stop) */}
+            {recordedAudio && !isRecording && (
+              <div className="flex items-center gap-3 mb-3 bg-white border rounded-lg shadow px-3 py-2">
+                <audio
+                  src={URL.createObjectURL(recordedAudio)}
+                  controls
+                  className="h-8 flex-1"
+                />
+                <button
+                  onClick={() => setRecordedAudio(null)}
+                  className="text-red-500 font-bold text-lg hover:text-red-600 transition"
+                  title="Delete Recording"
+                >
+                  ✖
+                </button>
+              </div>
+            )}
 
             {/* Message Input */}
             <div className="p-4 border-t bg-white">
-              <div className="flex items-center border rounded-full px-3 py-2 gap-3 bg-gray-50">
-                <div className="flex items-center gap-3 text-gray-500">
+              <div className="flex items-center border rounded-full px-3 py-2 gap-3 bg-gray-50 relative">
+
+                {/* Left Icons: Attach + Emoji */}
+                <div className="flex items-center gap-3 text-gray-500 relative">
+
                   {/* File Input (hidden) */}
                   <input
                     type="file"
@@ -893,41 +1044,79 @@ export default function Chat() {
                       e.target.value = ""; // reset for same file selection
                     }}
                   />
-
                   <label htmlFor="fileInput">
                     <ImAttachment className="cursor-pointer hover:text-gray-700" />
                   </label>
-                  <MdInsertEmoticon className="cursor-pointer hover:text-gray-700" />
+
+                  {/* Emoji Button */}
+                  <div className="relative" ref={emojiRef}>
+                    <MdInsertEmoticon
+                      className="cursor-pointer hover:text-gray-700"
+                      onClick={() => setEmojiOpen((prev) => !prev)}
+                    />
+
+                    {emojiOpen && (
+                      <div className="absolute bottom-10 left-0 z-50">
+                        <EmojiPicker
+                          onEmojiClick={(emojiData) =>
+                            setMessage((prev) => prev + emojiData.emoji)
+                          }
+                        />
+                      </div>
+                    )}
+                  </div>
                 </div>
 
+                {/* Recording UI */}
+                {isRecording && (
+                  <div className="absolute inset-x-0 -top-12 mx-auto w-fit px-4 py-2 
+                  rounded-full bg-gradient-to-r from-red-500 via-red-600 to-red-500 
+                  text-white text-sm font-medium flex items-center gap-2 
+                  shadow-lg animate-pulse border border-red-300/40">
+
+                    <span className="w-3 h-3 bg-white rounded-full animate-ping" />
+                    <span className="tracking-wide">Recording...</span>
+                    <span className="ml-2 text-xs bg-white/20 px-2 py-0.5 rounded-md">
+                      {String(Math.floor(recordingTime / 60)).padStart(2, '0')}:
+                      {String(recordingTime % 60).padStart(2, '0')}
+                    </span>
+                  </div>
+                )}
+
+
+
+                {/* Message Input */}
                 <input
                   type="text"
                   name="message"
-                  placeholder="Start typing..."
+                  placeholder={isRecording ? "Recording in progress..." : "Start typing..."}
+                  disabled={isRecording} // Disable typing while recording
                   className="flex-1 bg-transparent focus:outline-none px-2"
                   value={message}
                   onChange={(e) => setMessage(e.target.value)}
                   onKeyDown={(e) => {
                     if (e.key === "Enter" && !e.shiftKey) {
-                      e.preventDefault(); // Enter press se new line na bane
+                      e.preventDefault();
                       sendMessage();
                     }
                   }}
                 />
 
+                {/* Right Icons: Mic + Money + Send */}
                 <div className="flex items-center gap-3 text-gray-500">
                   {isMicOn ? (
                     <IoIosMic
-                      className="cursor-pointer hover:text-gray-700"
-                      onClick={() => setIsMicOn(false)}
+                      className="cursor-pointer hover:text-gray-700 text-xl"
+                      onClick={handleMicClick}
                     />
                   ) : (
                     <IoIosMicOff
-                      className="cursor-pointer text-red-500 hover:text-red-600"
-                      onClick={() => setIsMicOn(true)}
+                      className="cursor-pointer text-red-500 hover:text-red-600 text-xl"
+                      onClick={handleMicClick}
                     />
                   )}
-                  <FaSackDollar className="cursor-pointer hover:text-gray-700" />
+
+                 
                   <IoSend
                     className="w-6 h-6 cursor-pointer text-blue-600 hover:text-blue-800"
                     onClick={sendMessage}
@@ -935,12 +1124,15 @@ export default function Chat() {
                 </div>
               </div>
             </div>
+
+
           </>
         ) : (
           <div className="flex justify-center items-center h-full text-gray-400">
             Select a chat to start messaging
           </div>
-        )}
+        )
+        }
       </div>
     </div>
   );
