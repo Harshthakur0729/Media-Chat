@@ -28,9 +28,23 @@ function initSocket(server) {
 
     // Send message
     socket.on("sendMessage", async (msgData) => {
-      const { sender, receiver, messageType = "text", message = "", files = [] } = msgData;
+      const { sender, receiver, messageType = "text", message = "", files = [], tempId } = msgData;
+
+      // 1️⃣ Optimistic Emit to Sender (instant UI update)
+      const tempMessage = {
+        tempId: tempId || Date.now(),
+        sender,
+        receiver,
+        messageType,
+        message,
+        files,
+        createdAt: new Date(),
+        isTemp: true,
+      };
+      socket.emit("receiverMessage", tempMessage); // sender UI instant update
 
       try {
+        // 2️⃣ Save to DB
         const newMessage = new Message({ sender, receiver, messageType, message, files });
         const savedMessage = await newMessage.save();
         const decryptedMessage = Message.decryptData(savedMessage.message);
@@ -43,21 +57,24 @@ function initSocket(server) {
           message: decryptedMessage,
           files: savedMessage.files || [],
           createdAt: savedMessage.createdAt,
+          isTemp: false,
+          tempId: tempMessage.tempId,
         };
 
-        // ✅ Send to receiver if online
+        // 3️⃣ Send to receiver
         const receiverSocket = onlineUser.get(receiver.toString());
         if (receiverSocket) {
           io.to(receiverSocket).emit("receiverMessage", messageToSend);
         }
 
-        // ✅ Ack to sender only
+        // 4️⃣ Update sender with real ID
         socket.emit("messageSent", { status: "success", message: messageToSend });
       } catch (error) {
         console.error("❌ Error saving message:", error);
         socket.emit("messageError", { error: "Failed to send message" });
       }
     });
+
 
 
     // 🟢 Real-time Edit

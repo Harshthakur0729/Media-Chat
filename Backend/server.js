@@ -10,7 +10,7 @@ const server = http.createServer(app);
 
 initSocket(server);
 
-server.listen(config.PORT, () => {
+server.listen(config.PORT, "0.0.0.0", () => {
     connectDB();
     console.log(`server is running http://localhost:${config.PORT}`);
 });

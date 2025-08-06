@@ -227,6 +227,10 @@ export default function Chat() {
     fetchUsers();
   }, [loggedInUser]);
 
+
+
+
+
   // Auto-select user from URL
   useEffect(() => {
     if (!selectedUser && users.length) {
@@ -234,10 +238,6 @@ export default function Chat() {
       if (foundUser) setSelectedUser(foundUser);
     }
   }, [id, users]);
-
-
-
-
 
 
   // Fetch conversation function
@@ -272,23 +272,27 @@ export default function Chat() {
 
 
 
-  // Socket listeners (receive, edit, delete with refresh)
   useEffect(() => {
+    if (!socket) return;
+
     const handleReceive = (msg) => {
-      // Check if msg belongs to current chat
       const isCurrentChat =
         selectedUser &&
         (msg.sender === selectedUser._id || msg.receiver === selectedUser._id);
 
-      if (isCurrentChat) {
-        setMessages((prev) => {
-          // Avoid duplicate messages if already in list
-          if (prev.find((m) => m._id === msg._id)) return prev;
-          return [...prev, msg];
-        });
-        setTimeout(() => scrollToBottom(true), 100);
-      } else {
-        // Update last message + unread count in sidebar
+      setMessages((prev) => {
+        // ✅ Duplicate check
+        const exists = prev.some(
+          (m) => m._id === msg._id || (msg.tempId && m.tempId === msg.tempId)
+        );
+        if (exists) return prev;
+
+        // ✅ Append only if current chat
+        return isCurrentChat ? [...prev, msg] : prev;
+      });
+
+      if (!isCurrentChat) {
+        // ✅ Update user list and unread counts in background
         setUsers((prev) =>
           prev.map((u) =>
             u._id === msg.sender ? { ...u, lastMessage: msg.message } : u
@@ -299,31 +303,23 @@ export default function Chat() {
           [msg.sender]: (prev[msg.sender] || 0) + 1,
         }));
       }
+
+      if (isCurrentChat) {
+        setTimeout(() => scrollToBottom(true), 100);
+      }
     };
 
     const handleEdited = (updatedMsg) => {
       setMessages((prev) =>
         prev.map((msg) => (msg._id === updatedMsg._id ? updatedMsg : msg))
       );
-
-      if (
-        selectedUser &&
-        (updatedMsg.sender === selectedUser._id ||
-          updatedMsg.receiver === selectedUser._id)
-      ) {
-        fetchConversation(selectedUser._id);
-      }
     };
 
     const handleDeleted = (msgId) => {
       setMessages((prev) => prev.filter((msg) => msg._id !== msgId));
-
-      if (selectedUser) {
-        fetchConversation(selectedUser._id);
-      }
     };
 
-    // Register listeners
+    // ✅ Attach once
     socket.on("receiverMessage", handleReceive);
     socket.on("messageEdited", handleEdited);
     socket.on("messageDeleted", handleDeleted);
@@ -333,7 +329,10 @@ export default function Chat() {
       socket.off("messageEdited", handleEdited);
       socket.off("messageDeleted", handleDeleted);
     };
-  }, [selectedUser]);
+  }, [socket, selectedUser?._id]);
+
+
+
 
 
 
@@ -358,15 +357,14 @@ export default function Chat() {
       return;
     if (!selectedUser || !loggedInUser?._id) return;
 
-    // Merge normal attachments + recorded audio
     const allAttachments = [...attachments];
     if (recordedAudio) {
       allAttachments.push(recordedAudio);
     }
-
-    // Temporary message for UI (Optimistic)
+    const tempId = Date.now();
     const tempMsg = {
-      _id: Date.now(),
+      _id: tempId,
+      tempId,
       sender: loggedInUser._id,
       receiver: selectedUser._id,
       messageType: allAttachments.length > 0 ? "file" : "text",
@@ -380,12 +378,11 @@ export default function Chat() {
             : file.type.startsWith("audio")
               ? "audio"
               : "document",
-        progress: 0, // track upload progress
+        progress: 0,
       })),
       isTemp: true,
     };
 
-    // Optimistic UI update
     setMessages((prev) => [...prev, tempMsg]);
     setUsers((prev) =>
       prev.map((u) =>
@@ -395,7 +392,6 @@ export default function Chat() {
       )
     );
 
-    // Prepare FormData
     const formData = new FormData();
     formData.append("receiverId", selectedUser._id);
     formData.append("message", message);
@@ -404,14 +400,12 @@ export default function Chat() {
       formData.append("files", file);
     });
 
-    // Clear input & attachments for UI
     setMessage("");
     setAttachments([]);
-    setRecordedAudio(null); // ✅ Audio preview clear
+    setRecordedAudio(null);
     setTimeout(() => scrollToBottom(true), 100);
 
     try {
-      // Send to backend with Upload Progress
       const res = await axios.post(
         `${import.meta.env.VITE_BACKEND_URL}/api/upload/files`,
         formData,
@@ -423,10 +417,9 @@ export default function Chat() {
               (progressEvent.loaded * 100) / progressEvent.total
             );
 
-            // Update temp message progress
             setMessages((prev) =>
               prev.map((msg) =>
-                msg._id === tempMsg._id
+                msg.tempId === tempId
                   ? {
                     ...msg,
                     files: msg.files.map((file) => ({
@@ -443,13 +436,11 @@ export default function Chat() {
 
       const newMessage = res.data.message;
 
-      // Replace temp message with real one
       setMessages((prev) =>
-        prev.map((msg) => (msg._id === tempMsg._id ? newMessage : msg))
+        prev.map((msg) => (msg.tempId === tempId ? newMessage : msg))
       );
 
-      // ** IMPORTANT: Remove this emit to avoid double messages **
-      // socket.emit("sendMessage", newMessage);
+
     } catch (error) {
       console.error("Message send failed:", error);
       Swal.fire("Error", "Message send failed", "error");
@@ -688,216 +679,221 @@ export default function Chat() {
 
 
             {/* Chat Messages */}
-            {/* State for preview modal */}
 
             <div className="flex-1 p-4 overflow-y-auto space-y-4 bg-gray-50 scrollbar-hide">
-              {messages.map((msg, index) => {
-                const senderId = msg.sender?._id || msg.sender;
-                const isSender = senderId === loggedInUser?._id;
+              {messages
+                // ✅ Duplicate Filter
+                .filter(
+                  (msg, index, self) =>
+                    index === self.findIndex((m) => (m._id || `msg-${index}`) === (msg._id || `msg-${index}`))
+                )
+                .map((msg, index) => {
+                  const senderId = msg.sender?._id || msg.sender;
+                  const isSender = senderId === loggedInUser?._id;
 
-                const total = messages.length;
-                const menuPosition =
-                  index < 2
-                    ? "mt-2"
-                    : index >= total - 2
-                      ? "-translate-y-full mb-2"
-                      : "mt-2";
+                  const total = messages.length;
+                  const menuPosition =
+                    index < 2
+                      ? "mt-2"
+                      : index >= total - 2
+                        ? "-translate-y-full mb-2"
+                        : "mt-2";
 
-                return (
-                  <div
-                    key={msg._id || `msg-${index}`}
-                    className={`flex ${isSender ? "justify-end" : "justify-start"} relative group`}
-                  >
-                    {/* Chat Bubble */}
+                  return (
                     <div
-                      className={`px-3 py-2 rounded-2xl max-w-xs break-words whitespace-pre-line shadow-md
-          ${isSender ? "bg-blue-500 text-white" : "bg-white text-gray-800"}`}
+                      key={msg._id || `msg-${index}`}
+                      className={`flex ${isSender ? "justify-end" : "justify-start"} relative group`}
                     >
-                      {/* Editing Mode */}
-                      {editingMsgId === msg._id ? (
-                        <div className="flex gap-2 items-center">
-                          <input
-                            type="text"
-                            value={editInput}
-                            onChange={(e) => setEditInput(e.target.value)}
-                            className="flex-1 px-2 py-1 rounded border text-black"
-                            autoFocus
-                            onKeyDown={(e) => {
-                              if (e.key === "Enter" && !e.shiftKey) {
-                                e.preventDefault();
-                                submitEditMessage(msg._id);
-                              }
-                            }}
-                          />
-                          <button
-                            className="text-xs bg-green-500 text-white px-2 py-1 rounded"
-                            onClick={() => submitEditMessage(msg._id)}
-                          >
-                            Save
-                          </button>
-                          <button
-                            className="text-xs bg-gray-400 text-white px-2 py-1 rounded"
-                            onClick={() => setEditingMsgId(null)}
-                          >
-                            Cancel
-                          </button>
-                        </div>
-                      ) : (
-                        <>
-                          {/* Text */}
-                          {msg.messageType === "text" && wrapText(msg.message)}
-
-                          {/* Attachments */}
-                          {msg.files && msg.files.length > 0 && (
-                            <div className="mt-2 space-y-2">
-                              {msg.files.map((file, fIndex) => {
-                                const isUploading = msg.isTemp && file.progress < 100;
-
-                                // Image
-                                if (file.type === "image") {
-                                  return (
-                                    <div key={fIndex} className="relative max-w-[200px]">
-                                      <img
-                                        src={file.url}
-                                        alt="attachment"
-                                        className="rounded-xl w-full cursor-pointer"
-                                        onClick={() => setPreviewFile(file)}
-                                      />
-                                      {isUploading && (
-                                        <div className="absolute inset-0 bg-black/50 flex items-center justify-center rounded-xl">
-                                          <span className="text-white text-sm">{file.progress}%</span>
-                                        </div>
-                                      )}
-                                    </div>
-                                  );
+                      {/* Chat Bubble */}
+                      <div
+                        className={`px-3 py-2 rounded-2xl max-w-xs break-words whitespace-pre-line shadow-md
+              ${isSender ? "bg-blue-500 text-white" : "bg-white text-gray-800"}`}
+                      >
+                        {/* Editing Mode */}
+                        {editingMsgId === msg._id ? (
+                          <div className="flex gap-2 items-center">
+                            <input
+                              type="text"
+                              value={editInput}
+                              onChange={(e) => setEditInput(e.target.value)}
+                              className="flex-1 px-2 py-1 rounded border text-black"
+                              autoFocus
+                              onKeyDown={(e) => {
+                                if (e.key === "Enter" && !e.shiftKey) {
+                                  e.preventDefault();
+                                  submitEditMessage(msg._id);
                                 }
-
-                                // Video
-                                if (file.type === "video") {
-                                  return (
-                                    <div key={fIndex} className="relative max-w-[200px] rounded-xl overflow-hidden">
-                                      <video
-                                        src={file.url}
-                                        className="w-full cursor-pointer"
-                                        preload="metadata"
-                                        onClick={() => setPreviewFile(file)}
-                                      />
-                                      {isUploading && (
-                                        <div className="absolute inset-0 bg-black/50 flex items-center justify-center rounded-xl">
-                                          <span className="text-white text-sm">{file.progress}%</span>
-                                        </div>
-                                      )}
-                                    </div>
-                                  );
-                                }
-
-                                // Audio
-                                if (file.type === "audio") {
-                                  return (
-                                    <div key={fIndex} className="relative flex items-center gap-2 bg-gray-100 rounded-full px-3 py-1">
-                                      <audio src={file.url} controls className="h-8" />
-                                      {isUploading && (
-                                        <span className="absolute right-2 text-xs text-gray-600">{file.progress}%</span>
-                                      )}
-                                    </div>
-                                  );
-                                }
-
-                                // Document
-                                return (
-                                  <div key={fIndex} className="relative">
-                                    <div
-                                      onClick={() => setPreviewFile(file)}
-                                      className="flex items-center gap-2 p-2 bg-gray-100 rounded-lg hover:bg-gray-200 transition cursor-pointer"
-                                    >
-                                      <svg
-                                        xmlns="http://www.w3.org/2000/svg"
-                                        fill="none"
-                                        viewBox="0 0 24 24"
-                                        strokeWidth="1.5"
-                                        stroke="currentColor"
-                                        className="w-5 h-5 text-blue-600"
-                                      >
-                                        <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" />
-                                      </svg>
-                                      <span className="text-sm truncate max-w-[120px]">
-                                        {file.public_id || "Document"}
-                                      </span>
-                                    </div>
-                                    {isUploading && (
-                                      <div className="absolute inset-0 bg-white/70 flex items-center justify-center rounded-lg text-xs">
-                                        {file.progress}%
-                                      </div>
-                                    )}
-                                  </div>
-                                );
-                              })}
-                            </div>
-                          )}
-
-                          {msg.isEdited && (
-                            <span className="ml-1 text-xs italic opacity-70">(edited)</span>
-                          )}
-                        </>
-                      )}
-                    </div>
-
-                    {/* Hover Menu */}
-                    {editingMsgId !== msg._id && (
-                      <div className="msg-menu absolute top-1 opacity-0 group-hover:opacity-100 transition z-50">
-                        <BsThreeDotsVertical
-                          className="cursor-pointer text-gray-600 hover:text-gray-800"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            setActiveMsgMenu(activeMsgMenu === msg._id ? null : msg._id);
-                          }}
-                        />
-                        {activeMsgMenu === msg._id && (
-                          <div
-                            className={`absolute w-44 bg-white border shadow-md rounded-md z-50
-                  ${isSender ? "right-0" : "left-0"} ${menuPosition}`}
-                          >
-                            <p
-                              onClick={() => handleDeleteForMe(msg._id)}
-                              className="px-3 py-2 text-sm text-black hover:bg-gray-100 cursor-pointer"
+                              }}
+                            />
+                            <button
+                              className="text-xs bg-green-500 text-white px-2 py-1 rounded"
+                              onClick={() => submitEditMessage(msg._id)}
                             >
-                              Delete for Me
-                            </p>
-
-                            {isSender && (
-                              <>
-                                <p
-                                  onClick={() => handleDeleteForEveryone(msg._id)}
-                                  className="px-3 py-2 text-sm text-black hover:bg-gray-100 cursor-pointer"
-                                >
-                                  Delete Permanently
-                                </p>
-
-                                {msg.messageType === "text" &&
-                                  (!msg.files || msg.files.length === 0) && (
-                                    <p
-                                      onClick={() => handleEditMessage(msg)}
-                                      className="px-3 py-2 text-sm text-black hover:bg-gray-100 cursor-pointer"
-                                    >
-                                      Edit Message
-                                    </p>
-                                  )}
-                              </>
-                            )}
-
-                            <p
-                              onClick={() => setActiveMsgMenu(null)}
-                              className="px-3 py-2 text-sm text-black hover:bg-gray-100 cursor-pointer"
+                              Save
+                            </button>
+                            <button
+                              className="text-xs bg-gray-400 text-white px-2 py-1 rounded"
+                              onClick={() => setEditingMsgId(null)}
                             >
                               Cancel
-                            </p>
+                            </button>
                           </div>
+                        ) : (
+                          <>
+                            {/* Text */}
+                            {msg.messageType === "text" && wrapText(msg.message)}
+
+                            {/* Attachments */}
+                            {msg.files && msg.files.length > 0 && (
+                              <div className="mt-2 space-y-2">
+                                {msg.files.map((file, fIndex) => {
+                                  const isUploading = msg.isTemp && file.progress < 100;
+
+                                  // Image
+                                  if (file.type === "image") {
+                                    return (
+                                      <div key={fIndex} className="relative max-w-[200px]">
+                                        <img
+                                          src={file.url}
+                                          alt="attachment"
+                                          className="rounded-xl w-full cursor-pointer"
+                                          onClick={() => setPreviewFile(file)}
+                                        />
+                                        {isUploading && (
+                                          <div className="absolute inset-0 bg-black/50 flex items-center justify-center rounded-xl">
+                                            <span className="text-white text-sm">{file.progress}%</span>
+                                          </div>
+                                        )}
+                                      </div>
+                                    );
+                                  }
+
+                                  // Video
+                                  if (file.type === "video") {
+                                    return (
+                                      <div key={fIndex} className="relative max-w-[200px] rounded-xl overflow-hidden">
+                                        <video
+                                          src={file.url}
+                                          className="w-full cursor-pointer"
+                                          preload="metadata"
+                                          onClick={() => setPreviewFile(file)}
+                                        />
+                                        {isUploading && (
+                                          <div className="absolute inset-0 bg-black/50 flex items-center justify-center rounded-xl">
+                                            <span className="text-white text-sm">{file.progress}%</span>
+                                          </div>
+                                        )}
+                                      </div>
+                                    );
+                                  }
+
+                                  // Audio
+                                  if (file.type === "audio") {
+                                    return (
+                                      <div key={fIndex} className="relative flex items-center gap-2 bg-gray-100 rounded-full px-3 py-1">
+                                        <audio src={file.url} controls className="h-8" />
+                                        {isUploading && (
+                                          <span className="absolute right-2 text-xs text-gray-600">{file.progress}%</span>
+                                        )}
+                                      </div>
+                                    );
+                                  }
+
+                                  // Document
+                                  return (
+                                    <div key={fIndex} className="relative">
+                                      <div
+                                        onClick={() => setPreviewFile(file)}
+                                        className="flex items-center gap-2 p-2 bg-gray-100 rounded-lg hover:bg-gray-200 transition cursor-pointer"
+                                      >
+                                        <svg
+                                          xmlns="http://www.w3.org/2000/svg"
+                                          fill="none"
+                                          viewBox="0 0 24 24"
+                                          strokeWidth="1.5"
+                                          stroke="currentColor"
+                                          className="w-5 h-5 text-blue-600"
+                                        >
+                                          <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" />
+                                        </svg>
+                                        <span className="text-sm truncate max-w-[120px]">
+                                          {file.public_id || "Document"}
+                                        </span>
+                                      </div>
+                                      {isUploading && (
+                                        <div className="absolute inset-0 bg-white/70 flex items-center justify-center rounded-lg text-xs">
+                                          {file.progress}%
+                                        </div>
+                                      )}
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            )}
+
+                            {msg.isEdited && (
+                              <span className="ml-1 text-xs italic opacity-70">(edited)</span>
+                            )}
+                          </>
                         )}
                       </div>
-                    )}
-                  </div>
-                );
-              })}
+
+                      {/* Hover Menu */}
+                      {editingMsgId !== msg._id && (
+                        <div className="msg-menu absolute top-1 opacity-0 group-hover:opacity-100 transition z-50">
+                          <BsThreeDotsVertical
+                            className="cursor-pointer text-gray-600 hover:text-gray-800"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setActiveMsgMenu(activeMsgMenu === msg._id ? null : msg._id);
+                            }}
+                          />
+                          {activeMsgMenu === msg._id && (
+                            <div
+                              className={`absolute w-44 bg-white border shadow-md rounded-md z-50
+                    ${isSender ? "right-0" : "left-0"} ${menuPosition}`}
+                            >
+                              <p
+                                onClick={() => handleDeleteForMe(msg._id)}
+                                className="px-3 py-2 text-sm text-black hover:bg-gray-100 cursor-pointer"
+                              >
+                                Delete for Me
+                              </p>
+
+                              {isSender && (
+                                <>
+                                  <p
+                                    onClick={() => handleDeleteForEveryone(msg._id)}
+                                    className="px-3 py-2 text-sm text-black hover:bg-gray-100 cursor-pointer"
+                                  >
+                                    Delete Permanently
+                                  </p>
+
+                                  {msg.messageType === "text" &&
+                                    (!msg.files || msg.files.length === 0) && (
+                                      <p
+                                        onClick={() => handleEditMessage(msg)}
+                                        className="px-3 py-2 text-sm text-black hover:bg-gray-100 cursor-pointer"
+                                      >
+                                        Edit Message
+                                      </p>
+                                    )}
+                                </>
+                              )}
+
+                              <p
+                                onClick={() => setActiveMsgMenu(null)}
+                                className="px-3 py-2 text-sm text-black hover:bg-gray-100 cursor-pointer"
+                              >
+                                Cancel
+                              </p>
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
               <div ref={messagesEndRef} />
             </div>
 
@@ -1116,7 +1112,7 @@ export default function Chat() {
                     />
                   )}
 
-                 
+
                   <IoSend
                     className="w-6 h-6 cursor-pointer text-blue-600 hover:text-blue-800"
                     onClick={sendMessage}
