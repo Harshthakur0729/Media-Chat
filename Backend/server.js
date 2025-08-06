@@ -9,8 +9,8 @@ import initSocket from "./src/utils/socket.io.js";
 const server = http.createServer(app);
 
 initSocket(server);
-
-server.listen(config.PORT, "0.0.0.0", () => {
-    connectDB();
-    console.log(`server is running http://localhost:${config.PORT}`);
-});
+connectDB().then(() => {
+    server.listen(config.PORT, "0.0.0.0", () => {
+        console.log(`server is running http://localhost:${config.PORT}`);
+    });
+})
